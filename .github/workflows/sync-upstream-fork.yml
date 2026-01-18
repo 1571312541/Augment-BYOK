@@ -1,0 +1,131 @@
+name: sync-upstream-fork
+
+on:
+  schedule:
+    # 每 6 小时运行一次 (UTC 时间 0, 6, 12, 18 点)
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      sync_mode:
+        description: "同步模式"
+        required: true
+        default: "pr"
+        type: choice
+        options:
+          - pr        # 创建 PR 供审核
+          - direct    # 直接合并到 main (谨慎使用)
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/AnkRoot/Augment-BYOK.git || true
+          git fetch upstream --prune
+
+      - name: Check for updates
+        id: check
+        run: |
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          LOCAL_SHA=$(git rev-parse origin/main)
+
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "local_sha=$LOCAL_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$UPSTREAM_SHA" = "$LOCAL_SHA" ]; then
+            echo "has_updates=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Already up to date with upstream"
+          else
+            echo "has_updates=true" >> "$GITHUB_OUTPUT"
+            COMMIT_COUNT=$(git rev-list --count origin/main..upstream/main)
+            echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+            echo "📦 Found $COMMIT_COUNT new commit(s) from upstream"
+          fi
+
+      - name: Get upstream commit info
+        if: steps.check.outputs.has_updates == 'true'
+        id: commits
+        run: |
+          echo "## 上游新提交" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          git log --oneline origin/main..upstream/main | head -20 >> "$GITHUB_STEP_SUMMARY"
+
+          # 获取最新提交信息用于 PR
+          LATEST_MSG=$(git log -1 --format="%s" upstream/main)
+          echo "latest_message=$LATEST_MSG" >> "$GITHUB_OUTPUT"
+
+      - name: Create sync branch
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          # 删除可能存在的旧分支
+          git push origin --delete ci/sync-upstream 2>/dev/null || true
+
+          # 基于 upstream/main 创建同步分支
+          git checkout -b ci/sync-upstream upstream/main
+          git push -u origin ci/sync-upstream
+
+      - name: Create Pull Request
+        if: steps.check.outputs.has_updates == 'true' && (github.event.inputs.sync_mode == 'pr' || github.event.inputs.sync_mode == '')
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ci/sync-upstream
+          base: main
+          title: "chore: sync upstream (${{ steps.check.outputs.commit_count }} commits)"
+          body: |
+            ## 🔄 自动同步上游仓库
+
+            **上游仓库**: [AnkRoot/Augment-BYOK](https://github.com/AnkRoot/Augment-BYOK)
+
+            ### 变更概览
+            - **新提交数**: ${{ steps.check.outputs.commit_count }}
+            - **上游 SHA**: `${{ steps.check.outputs.upstream_sha }}`
+            - **本地 SHA**: `${{ steps.check.outputs.local_sha }}`
+
+            ### 最近提交
+            ```
+            ${{ steps.commits.outputs.latest_message }}
+            ```
+
+            ---
+            ⚠️ **请在合并前检查是否有冲突或破坏性变更**
+
+            _此 PR 由 `sync-upstream-fork` 工作流自动创建_
+          labels: |
+            sync
+            automated
+          delete-branch: false
+
+      - name: Direct merge (if requested)
+        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_mode == 'direct'
+        run: |
+          git checkout main
+          git merge upstream/main --no-edit
+          git push origin main
+          echo "✅ 已直接合并上游变更到 main" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summary
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "---" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.check.outputs.has_updates }}" = "true" ]; then
+            echo "🔄 同步操作已完成" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "✅ 无需同步，已是最新" >> "$GITHUB_STEP_SUMMARY"
+          fi
