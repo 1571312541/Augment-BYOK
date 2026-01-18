@@ -91,7 +91,18 @@ function providerRequestContext(provider) {
   const baseUrl = normalizeString(provider.baseUrl);
   const apiKey = resolveProviderApiKey(provider, providerLabel(provider));
   const extraHeaders = provider.headers && typeof provider.headers === "object" ? provider.headers : {};
-  const requestDefaults = provider.requestDefaults && typeof provider.requestDefaults === "object" ? provider.requestDefaults : {};
+  const requestDefaultsRaw = provider.requestDefaults && typeof provider.requestDefaults === "object" ? provider.requestDefaults : {};
+
+  const requestDefaults = (() => {
+    const rd = requestDefaultsRaw && typeof requestDefaultsRaw === "object" && !Array.isArray(requestDefaultsRaw) ? requestDefaultsRaw : {};
+    const keys = Object.keys(rd).filter((k) => k && typeof k === "string" && k.startsWith("__byok"));
+    if (!keys.length) return rd;
+    const out = { ...rd };
+    for (const k of keys) {
+      try { delete out[k]; } catch { }
+    }
+    return out;
+  })();
   if (!apiKey && Object.keys(extraHeaders).length === 0) throw new Error(`${providerLabel(provider)} 未配置 api_key（且 headers 为空）`);
   return { type, baseUrl, apiKey, extraHeaders, requestDefaults };
 }
@@ -1020,14 +1031,14 @@ async function maybeHandleCallApi({ endpoint, body, transform, timeoutMs, abortS
 
   const t = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Number(timeoutMs) : DEFAULT_UPSTREAM_TIMEOUT_MS;
 
-  if (ep === "/get-models") {
-    const byokModels = buildByokModelsFromConfig(cfg);
-    const byokDefaultModel = byokModels.length ? byokModels[0] : "";
-    const activeProviderId = normalizeString(cfg?.routing?.defaultProviderId) || normalizeString(cfg?.providers?.[0]?.id);
-    const activeProvider = Array.isArray(cfg?.providers) ? cfg.providers.find((p) => p && normalizeString(p.id) === activeProviderId) : null;
-    const activeProviderDefaultModel = normalizeString(activeProvider?.defaultModel) || normalizeString(activeProvider?.models?.[0]);
-    const preferredByok = activeProviderId && activeProviderDefaultModel ? `byok:${activeProviderId}:${activeProviderDefaultModel}` : "";
-    const preferredDefaultModel = byokModels.includes(preferredByok) ? preferredByok : byokDefaultModel;
+	  if (ep === "/get-models") {
+	    const byokModels = buildByokModelsFromConfig(cfg);
+	    const byokDefaultModel = byokModels.length ? byokModels[0] : "";
+	    const activeProvider = Array.isArray(cfg?.providers) ? cfg.providers[0] : null;
+	    const activeProviderId = normalizeString(activeProvider?.id);
+	    const activeProviderDefaultModel = normalizeString(activeProvider?.defaultModel) || normalizeString(activeProvider?.models?.[0]);
+	    const preferredByok = activeProviderId && activeProviderDefaultModel ? `byok:${activeProviderId}:${activeProviderDefaultModel}` : "";
+	    const preferredDefaultModel = byokModels.includes(preferredByok) ? preferredByok : byokDefaultModel;
     try {
       const off = getOfficialConnection();
       const completionURL = normalizeString(upstreamCompletionURL) || off.completionURL;
