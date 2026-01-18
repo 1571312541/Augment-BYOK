@@ -3,3 +3,6 @@ dist/
 tmp/
 
 config.yaml
+
+.claude/
+.spec-workflow/
